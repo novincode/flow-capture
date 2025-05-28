@@ -1,24 +1,11 @@
-import { useState } from "react"
+import React from "react"
+import './globals.css'
+import PopupHome from "./assets/components/PopupHome"
 
 function IndexPopup() {
-  const [data, setData] = useState("")
-
   return (
-    <div
-      style={{
-        padding: 16
-      }}>
-      <h2>
-        Welcome to your{" "}
-        <a href="https://www.plasmo.com" target="_blank">
-          Plasmo
-        </a>{" "}
-        Extension!
-      </h2>
-      <input onChange={(e) => setData(e.target.value)} value={data} />
-      <a href="https://docs.plasmo.com" target="_blank">
-        View Docs
-      </a>
+    <div className="min-h-[400px] bg-slate-950 text-slate-100">
+      <PopupHome />
     </div>
   )
 }
