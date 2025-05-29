@@ -6,6 +6,7 @@ import FormatSelector from './ui/FormatSelector'
 import Toast from './ui/Toast'
 import { useRecording } from '../lib/useRecording'
 import type { ExportFormat } from '../lib/types'
+import { ensureFFmpeg, isFFmpegAvailable, isFFmpegLoading, setProgressCallback } from '../lib/ffmpegService'
 
 // Firefox compatibility
 declare const browser: typeof chrome;
@@ -24,6 +25,8 @@ const PopupHome = () => {
   const [toastMessage, setToastMessage] = useState<string>("")
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info')
   const [permissionsReady, setPermissionsReady] = useState<boolean>(hasBrowserAPIs())
+  const [ffmpegLoading, setFfmpegLoading] = useState<boolean>(false)
+  const [ffmpegLoadProgress, setFfmpegLoadProgress] = useState<number>(0)
   const { isCapturing, error, startRecording, clearError } = useRecording()
   
   // Check for browser extension APIs on mount
@@ -35,6 +38,25 @@ const PopupHome = () => {
       setToastMessage("Extension API not detected. Please reload the extension.");
       setToastType('error');
     }
+    
+    // Set up FFmpeg status tracking
+    const checkFFmpegStatus = () => {
+      setFfmpegLoading(isFFmpegLoading());
+      
+      // Only track progress if we're loading
+      if (isFFmpegLoading()) {
+        // Set a callback to get loading progress
+        setProgressCallback((progress) => {
+          setFfmpegLoadProgress(progress);
+        });
+        
+        // Check again in 200ms
+        setTimeout(checkFFmpegStatus, 200);
+      }
+    };
+    
+    // Start tracking FFmpeg status
+    checkFFmpegStatus();
   }, []);
   
   // Clear error when changing settings
@@ -54,6 +76,31 @@ const PopupHome = () => {
     }
   }, [toastMessage]);
   
+  // Monitor FFmpeg loading status when non-WebM formats are selected
+  useEffect(() => {
+    if (exportFormat !== 'webm') {
+      // Setup progress callback for FFmpeg loading
+      setProgressCallback((progress) => {
+        setFfmpegLoadProgress(progress);
+      });
+      
+      // Check FFmpeg loading status periodically
+      const checkLoading = () => {
+        setFfmpegLoading(isFFmpegLoading());
+      };
+      
+      // Initial check
+      checkLoading();
+      
+      // Set up interval to check status
+      const interval = setInterval(checkLoading, 500);
+      
+      return () => {
+        clearInterval(interval);
+      };
+    }
+  }, [exportFormat]);
+  
   const handleCapture = async () => {
     if (isCapturing) return; // Prevent multiple captures
     
@@ -62,6 +109,32 @@ const PopupHome = () => {
       if (!hasBrowserAPIs()) {
         setToastMessage("Browser extension APIs not available. Please reload the extension.");
         setToastType('error');
+        return;
+      }
+      
+      // Check if we need to load FFmpeg for non-WebM formats
+      if (exportFormat !== 'webm' && !isFFmpegAvailable() && !ffmpegLoading) {
+        // Start loading FFmpeg
+        setToastMessage(`Loading conversion tools for ${exportFormat.toUpperCase()}...`);
+        setToastType('info');
+        setFfmpegLoading(true);
+        
+        try {
+          // Load FFmpeg - this will wait until it's ready
+          await ensureFFmpeg();
+        } catch (error) {
+          console.error("FFmpeg loading error:", error);
+          setToastMessage(`Failed to load conversion tools: ${error.message}`);
+          setToastType('error');
+          setFfmpegLoading(false);
+          return;
+        }
+      }
+      
+      // If we're still loading FFmpeg, tell the user we need to wait
+      if (exportFormat !== 'webm' && (ffmpegLoading || isFFmpegLoading())) {
+        setToastMessage(`Please wait for ${exportFormat.toUpperCase()} conversion tools to finish loading...`);
+        setToastType('info');
         return;
       }
       
@@ -76,12 +149,21 @@ const PopupHome = () => {
         duration: recordDuration
       });
       
-      setToastMessage(`Recording in progress (${recordDuration/1000}s)...`);
+      // For non-WebM formats, adjust message to indicate conversion will happen
+      if (exportFormat !== 'webm') {
+        setToastMessage(`Recording in progress (${recordDuration/1000}s)... ${exportFormat.toUpperCase()} conversion will follow.`);
+      } else {
+        setToastMessage(`Recording in progress (${recordDuration/1000}s)...`);
+      }
       setToastType('info');
       
       // Show success message after recording finishes
       setTimeout(() => {
-        setToastMessage("Recording complete! Check your downloads folder.");
+        if (exportFormat !== 'webm') {
+          setToastMessage(`Recording complete! ${exportFormat.toUpperCase()} conversion may take a few more seconds.`);
+        } else {
+          setToastMessage("Recording complete! Check your downloads folder.");
+        }
         setToastType('success');
       }, recordDuration + 1000);
       
@@ -117,8 +199,21 @@ const PopupHome = () => {
       <FormatSelector
         formats={["mp4", "gif", "webm"]}
         selectedFormat={exportFormat}
-        onChange={(format) => setExportFormat(format as ExportFormat)}
+        onChange={(format) => {
+          setExportFormat(format as ExportFormat);
+          // Pre-load FFmpeg if selecting a format that needs conversion
+          if (format !== 'webm' && !isFFmpegAvailable()) {
+            // Load in background
+            ensureFFmpeg().catch(err => {
+              console.error("Error pre-loading FFmpeg:", err);
+              setToastMessage("Error loading conversion tools: " + err.message);
+              setToastType('error');
+            });
+          }
+        }}
         label="Export Format"
+        isLoading={ffmpegLoading}
+        loadProgress={ffmpegLoadProgress}
       />
       
       {/* Frame Rate Slider */}
@@ -173,7 +268,7 @@ const PopupHome = () => {
       {/* Capture Button */}
       <Button 
         onClick={handleCapture}
-        disabled={isCapturing || !permissionsReady}
+        disabled={isCapturing || !permissionsReady || (ffmpegLoading && exportFormat !== 'webm')}
         fullWidth
         className="py-2.5 text-sm"
       >
@@ -196,6 +291,26 @@ const PopupHome = () => {
               />
             </svg>
             <span>Recording {recordDuration/1000}s...</span>
+          </div>
+        ) : ffmpegLoading && exportFormat !== 'webm' ? (
+          <div className="flex items-center gap-2">
+            <svg className="h-4 w-4 animate-spin text-white" viewBox="0 0 24 24">
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+                fill="none"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+            <span>Preparing {exportFormat.toUpperCase()} Tools...</span>
           </div>
         ) : (
           <span className="flex items-center gap-1.5">

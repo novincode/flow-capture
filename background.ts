@@ -15,6 +15,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'RECORDING_COMPLETE') {
     // Handle recording complete
     sendResponse({ success: true });
+  } 
+  else if (message.type === 'CONVERT_FORMAT') {
+    // Format conversion request from content script
+    // This will be forwarded to the popup/service worker where FFmpeg is loaded
+    console.log('Forwarding format conversion request:', message.format);
+    sendResponse({ success: true, message: 'Conversion request received' });
   }
   
   return true; // Keep the message channel open for async responses

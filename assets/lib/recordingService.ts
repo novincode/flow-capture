@@ -1,5 +1,6 @@
 // Recording service for capturing canvas content
 import type { RecordingOptions } from './types';
+import { convertWebmToGIF, convertWebmToMP4, ensureFFmpeg, isFFmpegLoading, setProgressCallback } from './ffmpegService';
 
 // Firefox compatibility
 declare const browser: typeof chrome;
@@ -103,25 +104,64 @@ function injectedScript(options: RecordingOptions) {
         }
       };
       
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: mimeType });
-        
-        // Download the recording
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        a.download = `figma-flow-${timestamp}.${options.format === 'gif' ? 'webm' : options.format}`;
-        a.href = url;
-        document.body.appendChild(a); // Required for Firefox
-        a.click();
-        
-        // Clean up
-        setTimeout(() => {
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }, 100);
-        
-        resolve("Recording completed and downloaded");
+      recorder.onstop = async () => {
+        try {
+          // Always record in WebM format initially for best compatibility
+          const webmBlob = new Blob(chunks, { type: mimeType });
+          
+          // Create timestamp for filenames
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          
+          // Handle format conversion for non-WebM formats
+          if (options.format !== 'webm') {
+            // For non-WebM formats, we'll send a message to convert
+            console.log(`Starting ${options.format.toUpperCase()} conversion...`);
+            
+            // Post message for format conversion
+            window.postMessage({
+              type: 'FIGMA_FLOW_CONVERT',
+              format: options.format,
+              blob: webmBlob
+            }, '*');
+            
+            // Also download the WebM as a backup
+            const webmUrl = URL.createObjectURL(webmBlob);
+            const webmLink = document.createElement('a');
+            webmLink.download = `figma-flow-${timestamp}-original.webm`;
+            webmLink.href = webmUrl;
+            webmLink.style.display = 'none';
+            document.body.appendChild(webmLink);
+            webmLink.click();
+            
+            // Clean up WebM download
+            setTimeout(() => {
+              document.body.removeChild(webmLink);
+              URL.revokeObjectURL(webmUrl);
+            }, 100);
+            
+            resolve(`${options.format.toUpperCase()} conversion initiated, WebM backup downloaded`);
+            return;
+          }
+          
+          // For WebM format, just download directly
+          const url = URL.createObjectURL(webmBlob);
+          const a = document.createElement('a');
+          a.download = `figma-flow-${timestamp}.webm`;
+          a.href = url;
+          document.body.appendChild(a); // Required for Firefox
+          a.click();
+          
+          // Clean up
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 100);
+          
+          resolve("WebM recording completed and downloaded");
+        } catch (error) {
+          console.error("Error processing recording:", error);
+          reject(error);
+        }
       };
       
       // Start recording with requestAnimationFrame for better timing
@@ -191,10 +231,25 @@ export async function captureCanvas(options: RecordingOptions): Promise<void> {
 }
 
 // Function to start recording with the specified options
-export function startCapture(options: RecordingOptions): Promise<void> {
-  return captureCanvas({
+export async function startCapture(options: RecordingOptions): Promise<void> {
+  const recordingOptions = {
     ...options,
     // Default duration of 5 seconds if not specified
     duration: options.duration || 5000
-  });
+  };
+  
+  // For non-WebM formats, ensure FFmpeg is loaded first
+  if (options.format !== 'webm') {
+    try {
+      console.log(`Preloading FFmpeg for ${options.format} conversion...`);
+      await ensureFFmpeg();
+    } catch (error) {
+      console.error("Error loading FFmpeg:", error);
+      // Fall back to WebM if FFmpeg failed to load
+      recordingOptions.format = 'webm';
+    }
+  }
+  
+  // Now start the actual recording
+  return captureCanvas(recordingOptions);
 }

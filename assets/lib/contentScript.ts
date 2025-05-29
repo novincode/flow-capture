@@ -1,5 +1,6 @@
 // Content script to be injected into the Figma page
 import type { RecordingOptions } from './types';
+import { initMessageHandler } from './messageHandler';
 
 // Provide a more robust canvas detection for Figma
 function findFigmaCanvas(): HTMLCanvasElement | null {
@@ -112,3 +113,11 @@ export function downloadRecording(blob: Blob, format: string): void {
     URL.revokeObjectURL(url);
   }, 100);
 }
+
+// Initialize message handler when the content script loads
+initMessageHandler();
+
+// Tell the extension that the content script is ready
+chrome.runtime.sendMessage({ type: 'CONTENT_SCRIPT_READY' }).catch(err => {
+  console.error('Error sending ready message:', err);
+});
