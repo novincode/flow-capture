@@ -1,6 +1,7 @@
 // Recording service for capturing canvas content
 import type { RecordingOptions } from './types';
 import { convertWebmToGIF, convertWebmToMP4, ensureFFmpeg, isFFmpegLoading, setProgressCallback } from './ffmpegService';
+import { captureFullCanvas } from './fullCanvasCapture';
 
 // Firefox compatibility
 declare const browser: typeof chrome;
@@ -45,6 +46,33 @@ function injectedScript(options: RecordingOptions) {
     
     return sortedCanvases[0];
   }
+  
+  // Function to get the full scrollable content dimensions
+  function getFullContentDimensions() {
+    // Try to find Figma frame or design size
+    const viewportElement = document.querySelector('.view');
+    const zoomElement = document.querySelector('.zoom-wrapper') as HTMLElement;
+    
+    // Fallback to document scrolling dimensions if Figma elements not found
+    let fullWidth = document.documentElement.scrollWidth;
+    let fullHeight = document.documentElement.scrollHeight;
+    
+    // If we found Figma specific elements, use those for more accurate dimensions
+    if (zoomElement) {
+      const scale = zoomElement.style.transform
+        ? parseFloat(zoomElement.style.transform.match(/scale\(([^)]+)\)/)?.[1] || "1")
+        : 1;
+      
+      // Account for zoom level when calculating full dimensions
+      if (zoomElement.scrollWidth > 0 && zoomElement.scrollHeight > 0) {
+        fullWidth = Math.max(fullWidth, zoomElement.scrollWidth * (1/scale));
+        fullHeight = Math.max(fullHeight, zoomElement.scrollHeight * (1/scale));
+      }
+    }
+    
+    console.log(`Full content dimensions: ${fullWidth}x${fullHeight}`);
+    return { width: fullWidth, height: fullHeight };
+  }
 
   return new Promise((resolve, reject) => {
     try {
@@ -56,7 +84,15 @@ function injectedScript(options: RecordingOptions) {
         return;
       }
       
+      // Get the full content dimensions (entire design, not just viewport)
+      const fullDimensions = getFullContentDimensions();
+      
       console.log("Found canvas:", canvas.width + "x" + canvas.height);
+      console.log("Full content dimensions:", fullDimensions.width + "x" + fullDimensions.height);
+      
+      // Determine if we need to capture scroll content
+      const needsScrollCapture = fullDimensions.width > window.innerWidth || 
+                                fullDimensions.height > window.innerHeight;
       
       // Create a stream from the canvas
       const stream = canvas.captureStream(options.frameRate);
@@ -64,6 +100,11 @@ function injectedScript(options: RecordingOptions) {
       if (!stream) {
         reject("Failed to create stream from canvas");
         return;
+      }
+      
+      // If we need to capture content larger than the viewport, inform the user
+      if (needsScrollCapture) {
+        console.log("Design is larger than viewport. Will attempt to capture full content.");
       }
       
       // Use requestAnimationFrame for smoother recording (optional enhancement)
@@ -235,21 +276,20 @@ export async function startCapture(options: RecordingOptions): Promise<void> {
   const recordingOptions = {
     ...options,
     // Default duration of 5 seconds if not specified
-    duration: options.duration || 5000
+    duration: options.duration || 5000,
+    // New option to control full-size capture
+    captureFullSize: options.captureFullSize ?? false // Default to false for safety
   };
-  
-  // For non-WebM formats, ensure FFmpeg is loaded first
-  if (options.format !== 'webm') {
-    try {
-      console.log(`Preloading FFmpeg for ${options.format} conversion...`);
-      await ensureFFmpeg();
-    } catch (error) {
-      console.error("Error loading FFmpeg:", error);
-      // Fall back to WebM if FFmpeg failed to load
-      recordingOptions.format = 'webm';
-    }
+
+  // Always use WebM now since we're disabling FFmpeg temporarily
+  recordingOptions.format = 'webm';
+
+  // Choose capture method based on user preference
+  if (recordingOptions.captureFullSize) {
+    console.log("🎬 Using full canvas capture (new simple approach)");
+    return captureFullCanvas(recordingOptions);
+  } else {
+    console.log("🎥 Using basic WebM recording (safe fallback)");
+    return captureCanvas(recordingOptions);
   }
-  
-  // Now start the actual recording
-  return captureCanvas(recordingOptions);
 }

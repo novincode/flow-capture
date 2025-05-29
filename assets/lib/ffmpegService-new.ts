@@ -172,7 +172,7 @@ export async function convertWebmToGIF(webmBlob: Blob): Promise<Blob> {
   ]);
   
   await ffmpegInstance.exec([
-    '-i', 'input.webm',
+    '-i', 'input.webv',
     '-i', 'palette.png',
     '-filter_complex', 'fps=15,scale=640:-1:flags=lanczos[x];[x][1:v]paletteuse',
     'output.gif'

@@ -4,9 +4,10 @@ import Toggle from './ui/Toggle'
 import Slider from './ui/Slider'
 import FormatSelector from './ui/FormatSelector'
 import Toast from './ui/Toast'
+import ProgressBar from './ui/ProgressBar'
 import { useRecording } from '../lib/useRecording'
 import type { ExportFormat } from '../lib/types'
-import { ensureFFmpeg, isFFmpegAvailable, isFFmpegLoading, setProgressCallback } from '../lib/ffmpegService'
+import { ensureFFmpeg, isFFmpegAvailable, isFFmpegLoading, setProgressCallback, resetFFmpegLoader, getFFmpegLoadError } from '../lib/ffmpegService'
 
 // Firefox compatibility
 declare const browser: typeof chrome;
@@ -21,12 +22,14 @@ const PopupHome = () => {
   const [frameRate, setFrameRate] = useState<number>(30)
   const [showCursor, setShowCursor] = useState<boolean>(true)
   const [renderGestures, setRenderGestures] = useState<boolean>(false)
+  const [captureFullSize, setCaptureFullSize] = useState<boolean>(true) // Default to full-size capture
   const [recordDuration, setRecordDuration] = useState<number>(5000) // 5 seconds by default
   const [toastMessage, setToastMessage] = useState<string>("")
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info')
   const [permissionsReady, setPermissionsReady] = useState<boolean>(hasBrowserAPIs())
   const [ffmpegLoading, setFfmpegLoading] = useState<boolean>(false)
   const [ffmpegLoadProgress, setFfmpegLoadProgress] = useState<number>(0)
+  const [ffmpegError, setFfmpegError] = useState<string>("");
   const { isCapturing, error, startRecording, clearError } = useRecording()
   
   // Check for browser extension APIs on mount
@@ -40,23 +43,33 @@ const PopupHome = () => {
     }
     
     // Set up FFmpeg status tracking
+    let ffmpegStatusInterval: NodeJS.Timeout | null = null;
     const checkFFmpegStatus = () => {
-      setFfmpegLoading(isFFmpegLoading());
-      
-      // Only track progress if we're loading
-      if (isFFmpegLoading()) {
-        // Set a callback to get loading progress
+      const loading = isFFmpegLoading();
+      setFfmpegLoading(loading);
+      if (loading) {
         setProgressCallback((progress) => {
           setFfmpegLoadProgress(progress);
         });
-        
-        // Check again in 200ms
-        setTimeout(checkFFmpegStatus, 200);
+        if (!ffmpegStatusInterval) {
+          ffmpegStatusInterval = setInterval(() => {
+            const stillLoading = isFFmpegLoading();
+            setFfmpegLoading(stillLoading);
+            if (!stillLoading) {
+              setFfmpegLoadProgress(100);
+              if (ffmpegStatusInterval) clearInterval(ffmpegStatusInterval);
+            }
+          }, 200);
+        }
+      } else {
+        setFfmpegLoadProgress(100);
+        if (ffmpegStatusInterval) clearInterval(ffmpegStatusInterval);
       }
     };
-    
-    // Start tracking FFmpeg status
     checkFFmpegStatus();
+    return () => {
+      if (ffmpegStatusInterval) clearInterval(ffmpegStatusInterval);
+    };
   }, []);
   
   // Clear error when changing settings
@@ -64,7 +77,7 @@ const PopupHome = () => {
     if (error) {
       clearError();
     }
-  }, [exportFormat, frameRate, showCursor, renderGestures]);
+  }, [exportFormat, frameRate, showCursor, renderGestures, captureFullSize]);
   
   // Auto-dismiss toast after 5 seconds
   useEffect(() => {
@@ -76,28 +89,43 @@ const PopupHome = () => {
     }
   }, [toastMessage]);
   
+  // More detailed loading status for FFmpeg
+  const [ffmpegStatus, setFfmpegStatus] = useState<string>("");
+  
   // Monitor FFmpeg loading status when non-WebM formats are selected
   useEffect(() => {
     if (exportFormat !== 'webm') {
-      // Setup progress callback for FFmpeg loading
+      // Set up console logging interceptor to track FFmpeg status
+      const originalConsoleLog = console.log;
+      console.log = function(...args) {
+        if (typeof args[0] === 'string' && args[0].includes('[FFmpeg]')) {
+          setFfmpegStatus(args[0].replace('[FFmpeg] ', ''));
+        }
+        originalConsoleLog.apply(console, args);
+      };
+      
+      // Progress callback
       setProgressCallback((progress) => {
         setFfmpegLoadProgress(progress);
       });
       
-      // Check FFmpeg loading status periodically
+      // Regular status check
       const checkLoading = () => {
         setFfmpegLoading(isFFmpegLoading());
+        const err = getFFmpegLoadError();
+        setFfmpegError(err ? err.message : "");
       };
       
-      // Initial check
       checkLoading();
-      
-      // Set up interval to check status
       const interval = setInterval(checkLoading, 500);
       
       return () => {
+        console.log = originalConsoleLog; // Restore original console.log
         clearInterval(interval);
       };
+    } else {
+      setFfmpegError("");
+      setFfmpegStatus("");
     }
   }, [exportFormat]);
   
@@ -118,10 +146,11 @@ const PopupHome = () => {
         setToastMessage(`Loading conversion tools for ${exportFormat.toUpperCase()}...`);
         setToastType('info');
         setFfmpegLoading(true);
-        
         try {
           // Load FFmpeg - this will wait until it's ready
           await ensureFFmpeg();
+          setFfmpegLoading(false);
+          setFfmpegLoadProgress(100);
         } catch (error) {
           console.error("FFmpeg loading error:", error);
           setToastMessage(`Failed to load conversion tools: ${error.message}`);
@@ -138,7 +167,7 @@ const PopupHome = () => {
         return;
       }
       
-      setToastMessage("Starting recording... Please wait.");
+      setToastMessage(captureFullSize ? "Starting full-design capture... Please wait." : "Starting recording... Please wait.");
       setToastType('info');
       
       await startRecording({
@@ -146,23 +175,24 @@ const PopupHome = () => {
         frameRate: frameRate,
         showCursor: showCursor,
         renderGestures: renderGestures,
-        duration: recordDuration
+        duration: recordDuration,
+        captureFullSize: captureFullSize
       });
       
       // For non-WebM formats, adjust message to indicate conversion will happen
       if (exportFormat !== 'webm') {
-        setToastMessage(`Recording in progress (${recordDuration/1000}s)... ${exportFormat.toUpperCase()} conversion will follow.`);
+        setToastMessage(`${captureFullSize ? 'Full-design' : 'Recording'} in progress (${recordDuration/1000}s)... ${exportFormat.toUpperCase()} conversion will follow.`);
       } else {
-        setToastMessage(`Recording in progress (${recordDuration/1000}s)...`);
+        setToastMessage(`${captureFullSize ? 'Full-design capture' : 'Recording'} in progress (${recordDuration/1000}s)...`);
       }
       setToastType('info');
       
       // Show success message after recording finishes
       setTimeout(() => {
         if (exportFormat !== 'webm') {
-          setToastMessage(`Recording complete! ${exportFormat.toUpperCase()} conversion may take a few more seconds.`);
+          setToastMessage(`${captureFullSize ? 'Full-design capture' : 'Recording'} complete! ${exportFormat.toUpperCase()} conversion may take a few more seconds.`);
         } else {
-          setToastMessage("Recording complete! Check your downloads folder.");
+          setToastMessage(`${captureFullSize ? 'Full-design capture' : 'Recording'} complete! Check your downloads folder.`);
         }
         setToastType('success');
       }, recordDuration + 1000);
@@ -173,6 +203,22 @@ const PopupHome = () => {
       setToastType('error');
     }
   }
+
+  const handleRetryFFmpeg = async () => {
+    resetFFmpegLoader();
+    setFfmpegError("");
+    setFfmpegLoadProgress(0);
+    setFfmpegLoading(true);
+    try {
+      await ensureFFmpeg();
+      setFfmpegLoading(false);
+      setFfmpegLoadProgress(100);
+    } catch (error) {
+      setFfmpegError(error instanceof Error ? error.message : String(error));
+      setFfmpegLoading(false);
+      setFfmpegLoadProgress(0);
+    }
+  };
 
   return (
     <div className="w-80 space-y-5 p-5">
@@ -187,12 +233,42 @@ const PopupHome = () => {
       </div>
       
       {/* Toast notifications */}
-      {(error || toastMessage) && (
+      {(error || toastMessage || ffmpegError) && (
         <Toast
-          message={error || toastMessage}
-          type={error ? 'error' : toastType}
-          onDismiss={error ? clearError : () => setToastMessage("")}
+          message={error || toastMessage || ffmpegError}
+          type={error ? 'error' : ffmpegError ? 'error' : toastType}
+          onDismiss={error ? clearError : () => { setToastMessage(""); setFfmpegError(""); }}
         />
+      )}
+      
+      {/* FFmpeg status and error UI */}
+      {exportFormat !== 'webm' && (ffmpegError || ffmpegLoading || ffmpegStatus) && (
+        <div className="flex flex-col items-center gap-2 text-xs w-full">
+          {ffmpegLoading && (
+            <>
+              <div className="w-full flex flex-col items-center gap-1">
+                <ProgressBar progress={ffmpegLoadProgress} />
+                <div className="flex items-center gap-2">
+                  <span className="text-amber-300">Loading conversion tools:</span>
+                  <span className="font-mono">{ffmpegStatus || "Initializing..."}</span>
+                  <span className="text-slate-400">{Math.round(ffmpegLoadProgress)}%</span>
+                </div>
+              </div>
+            </>
+          )}
+          {ffmpegError && (
+            <>
+              <span className="text-red-400">Failed to load conversion tools: {ffmpegError}</span>
+              <button
+                className="rounded bg-red-600 px-3 py-1 text-white hover:bg-red-700"
+                onClick={handleRetryFFmpeg}
+                disabled={ffmpegLoading}
+              >
+                Retry Loading
+              </button>
+            </>
+          )}
+        </div>
       )}
       
       {/* Export Format */}
@@ -242,6 +318,13 @@ const PopupHome = () => {
           onChange={() => setRenderGestures(!renderGestures)} 
           label="Render Gestures" 
           id="gestures" 
+        />
+        
+        <Toggle 
+          checked={captureFullSize} 
+          onChange={() => setCaptureFullSize(!captureFullSize)} 
+          label="Capture Full Design" 
+          id="fullSize" 
         />
         
         {/* Recording Duration */}

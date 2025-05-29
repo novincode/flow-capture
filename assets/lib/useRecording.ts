@@ -38,6 +38,7 @@ export function useRecording() {
     showCursor: boolean;
     renderGestures: boolean;
     duration?: number;
+    captureFullSize?: boolean;
   }) => {
     try {
       setError(null);

@@ -17,4 +17,7 @@ export interface RecordingOptions {
   
   // Duration of recording in milliseconds (optional)
   duration?: number;
+  
+  // Whether to attempt capturing the full canvas size, even content outside viewport
+  captureFullSize?: boolean;
 }
